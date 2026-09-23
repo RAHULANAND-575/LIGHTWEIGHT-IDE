@@ -4,6 +4,7 @@ A lightweight **Python-only desktop IDE** for algorithm/data-structure learning 
 
 ## Features
 - Minimal top-bar icon layout (`☰` menu + `📝` notebook)
+- Smooth transitions: startup fade-in, animated ambient glow, live-dot pulse, hover effects, and sliding panels
 - Compact tab workflow with close buttons
 - Python-only file tree and file opening (`.py` only)
 - Clean bottom output panel

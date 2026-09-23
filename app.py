@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import subprocess
 import sys
@@ -41,6 +42,13 @@ class PythonLiteIDE(tk.Tk):
         self.process_thread = None
         self.current_process_temp_file = None
         self.live_after_id = None
+        self.live_pulse_after_id = None
+        self.live_pulse_phase = 0.0
+        self.bg_glow_phase = 0.0
+        self.bg_glow_after_id = None
+        self.button_hover_jobs = {}
+        self.tree_animating = False
+        self.tree_expanded_width = 290
 
         self.tabs = []
         self.current_tab_index = None
@@ -59,6 +67,7 @@ class PythonLiteIDE(tk.Tk):
         self._refresh_file_tree()
         self.bind("<Configure>", self._on_window_resize)
         self.after(120, self._position_drawer_offscreen)
+        self.after(160, self._fade_in_window)
 
     def _setup_style(self):
         style = ttk.Style(self)
@@ -83,6 +92,7 @@ class PythonLiteIDE(tk.Tk):
         self.bg_canvas = tk.Canvas(self, highlightthickness=0, bd=0)
         self.bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self._draw_gradient_background()
+        self._animate_ambient_glow()
 
     def _draw_gradient_background(self):
         self.bg_canvas.delete("all")
@@ -101,8 +111,52 @@ class PythonLiteIDE(tk.Tk):
             y1 = int(h * (i + 1) / steps)
             self.bg_canvas.create_rectangle(0, y0, w, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
 
-        self.bg_canvas.create_oval(w * 0.65, h * 0.15, w * 1.05, h * 0.95, fill="#5f2fb0", outline="", stipple="gray50")
-        self.bg_canvas.create_oval(-w * 0.2, -h * 0.2, w * 0.45, h * 0.5, fill="#1d4b9c", outline="", stipple="gray50")
+        self.bg_blob_1 = self.bg_canvas.create_oval(w * 0.62, h * 0.12, w * 1.02, h * 0.92, fill="#5f2fb0", outline="", stipple="gray50")
+        self.bg_blob_2 = self.bg_canvas.create_oval(-w * 0.18, -h * 0.25, w * 0.42, h * 0.45, fill="#1d4b9c", outline="", stipple="gray50")
+
+    def _animate_ambient_glow(self):
+        if not hasattr(self, "bg_blob_1") or not hasattr(self, "bg_blob_2"):
+            return
+
+        w = max(1, self.winfo_width())
+        h = max(1, self.winfo_height())
+        self.bg_glow_phase += 0.045
+        s = math.sin(self.bg_glow_phase)
+        c = math.cos(self.bg_glow_phase * 0.8)
+
+        self.bg_canvas.coords(
+            self.bg_blob_1,
+            w * (0.62 + 0.02 * s),
+            h * (0.12 + 0.015 * c),
+            w * (1.02 + 0.02 * s),
+            h * (0.92 + 0.015 * c),
+        )
+        self.bg_canvas.coords(
+            self.bg_blob_2,
+            w * (-0.18 + 0.03 * c),
+            h * (-0.25 + 0.02 * s),
+            w * (0.42 + 0.03 * c),
+            h * (0.45 + 0.02 * s),
+        )
+
+        self.bg_glow_after_id = self.after(42, self._animate_ambient_glow)
+
+    def _fade_in_window(self):
+        try:
+            self.attributes("-alpha", 0.0)
+        except tk.TclError:
+            return
+
+        def step(alpha=0.0):
+            next_alpha = min(1.0, alpha + 0.08)
+            try:
+                self.attributes("-alpha", next_alpha)
+            except tk.TclError:
+                return
+            if next_alpha < 1.0:
+                self.after(18, lambda: step(next_alpha))
+
+        step(0.0)
 
     def _glass_panel(self, parent, *, pad=1, inner_bg=None):
         outer = tk.Frame(parent, bg="#5baeff", highlightthickness=0, bd=0)
@@ -151,6 +205,7 @@ class PythonLiteIDE(tk.Tk):
             cursor="hand2",
         )
         self.live_pill.pack(side="left", padx=(6, 6), pady=8)
+        self._attach_hover_effect(self.live_pill, "#2b3e70", "#3a5c98")
 
         self.live_dot = tk.Canvas(controls, width=22, height=22, bg=self.palette["bar"], highlightthickness=0)
         self.live_dot.pack(side="left", pady=8)
@@ -234,6 +289,7 @@ class PythonLiteIDE(tk.Tk):
 
     def _icon_btn(self, parent, symbol, command, glow=None, emphasize=False):
         bg = "#263e72" if emphasize else "#243864"
+        hover_bg = "#365791" if emphasize else "#304c81"
         btn = tk.Button(
             parent,
             text=symbol,
@@ -251,7 +307,59 @@ class PythonLiteIDE(tk.Tk):
             highlightthickness=1,
             highlightbackground="#6aa7ff" if not glow else glow,
         )
+        self._attach_hover_effect(btn, bg, hover_bg)
         return btn
+
+    def _hex_to_rgb(self, hex_color):
+        hex_color = hex_color.lstrip("#")
+        return tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+
+    def _rgb_to_hex(self, rgb):
+        r, g, b = (max(0, min(255, int(v))) for v in rgb)
+        return f"#{r:02x}{g:02x}{b:02x}"
+
+    def _blend_hex(self, a, b, t):
+        ar, ag, ab = self._hex_to_rgb(a)
+        br, bg, bb = self._hex_to_rgb(b)
+        return self._rgb_to_hex(
+            (
+                ar + (br - ar) * t,
+                ag + (bg - ag) * t,
+                ab + (bb - ab) * t,
+            )
+        )
+
+    def _animate_widget_bg(self, widget, start, end, steps=7, delay=14):
+        key = str(widget)
+        running = self.button_hover_jobs.get(key)
+        if running:
+            try:
+                widget.after_cancel(running)
+            except Exception:
+                pass
+
+        def frame(i=0):
+            t = i / max(1, steps)
+            widget.configure(bg=self._blend_hex(start, end, t))
+            if i < steps:
+                job = widget.after(delay, lambda: frame(i + 1))
+                self.button_hover_jobs[key] = job
+            else:
+                self.button_hover_jobs.pop(key, None)
+
+        frame(0)
+
+    def _attach_hover_effect(self, widget, base_bg, hover_bg):
+        def enter(_event):
+            current = widget.cget("bg")
+            self._animate_widget_bg(widget, current, hover_bg)
+
+        def leave(_event):
+            current = widget.cget("bg")
+            self._animate_widget_bg(widget, current, base_bg)
+
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", leave, add="+")
 
     def _build_notes_drawer(self):
         self.notes_open = False
@@ -473,11 +581,60 @@ class PythonLiteIDE(tk.Tk):
         self.title(f"Python Lite IDE - {name}")
 
     def toggle_file_tree(self):
+        if self.tree_animating:
+            return
+
         if self.tree_visible:
-            self.paned.forget(self.left_shell)
+            self.tree_animating = True
+            self._animate_tree_width(
+                target=0,
+                on_done=lambda: (
+                    self.paned.forget(self.left_shell),
+                    setattr(self, "tree_visible", False),
+                    setattr(self, "tree_animating", False),
+                ),
+            )
         else:
             self.paned.insert(0, self.left_shell)
-        self.tree_visible = not self.tree_visible
+            self.tree_animating = True
+            self.after(
+                5,
+                lambda: self._animate_tree_width(
+                    target=self.tree_expanded_width,
+                    on_done=lambda: (
+                        setattr(self, "tree_visible", True),
+                        setattr(self, "tree_animating", False),
+                    ),
+                ),
+            )
+
+    def _animate_tree_width(self, target, on_done):
+        self.update_idletasks()
+        if not self.paned.panes():
+            on_done()
+            return
+
+        try:
+            current = int(self.paned.sash_coord(0)[0])
+        except Exception:
+            current = self.tree_expanded_width if self.tree_visible else 0
+
+        delta = target - current
+        if abs(delta) <= 10:
+            try:
+                self.paned.sash_place(0, target, 0)
+            except Exception:
+                pass
+            on_done()
+            return
+
+        step = 20 if delta > 0 else -20
+        try:
+            self.paned.sash_place(0, current + step, 0)
+        except Exception:
+            on_done()
+            return
+        self.after(12, lambda: self._animate_tree_width(target, on_done))
 
     def open_folder(self):
         folder = filedialog.askdirectory()
@@ -653,9 +810,27 @@ class PythonLiteIDE(tk.Tk):
         on = self.live_mode.get()
         dot = self.palette["accent_green"] if on else "#7188b5"
         self.live_dot.delete("all")
-        self.live_dot.create_oval(5, 5, 17, 17, fill=dot, outline="")
+        self.live_dot.create_oval(5, 5, 17, 17, fill=dot, outline="", tags="live_dot")
         self.live_pill.configure(fg="#7effc0" if on else "#8db8ff")
         self.output_title.configure(text="OUTPUT   ● LIVE" if on else "OUTPUT")
+        if on:
+            self._animate_live_dot()
+        elif self.live_pulse_after_id:
+            try:
+                self.after_cancel(self.live_pulse_after_id)
+            except Exception:
+                pass
+            self.live_pulse_after_id = None
+
+    def _animate_live_dot(self):
+        if not self.live_mode.get():
+            return
+
+        self.live_pulse_phase += 0.22
+        radius = 5.6 + (math.sin(self.live_pulse_phase) + 1.0) * 1.2
+        center = 11
+        self.live_dot.coords("live_dot", center - radius, center - radius, center + radius, center + radius)
+        self.live_pulse_after_id = self.after(45, self._animate_live_dot)
 
     def _on_editor_key_release(self, _event):
         if self.current_tab_index is None:
