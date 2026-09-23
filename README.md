@@ -23,7 +23,7 @@ A lightweight **Python-only desktop IDE** for algorithm/data-structure learning 
   - Insert note into editor
 - Background modes:
   - Solid dark mode
-  - Wallpaper mode (PNG)
+  - Wallpaper mode (PNG/GIF)
 
 ## Run (macOS)
 ```bash
@@ -33,3 +33,8 @@ python3 app.py
 ## Notes
 - This is implemented as a native Python desktop application (Tkinter), not a web app.
 - Wallpaper mode currently supports PNG images for a lightweight dependency-free setup.
+
+
+## Interaction reliability
+- Context menu now works on macOS right-click variants (`Button-2`, `Button-3`, and `Control+Click`).
+- Popup menus release grab correctly to prevent controls becoming unresponsive after menu usage.
